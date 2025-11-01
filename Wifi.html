@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Wi-Fi Analyzer – Local Mode</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: 'Space Grotesk', sans-serif; }
+</style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+  <div class="max-w-5xl mx-auto py-8 px-4">
+    <h1 class="text-3xl font-bold text-center mb-6">Wi-Fi Analyzer — Local Mode</h1>
+
+    <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+      
+      <!-- NEW: Command display and copy button -->
+               <label class="block text-sm font-medium mb-1">Run 'CMD' as admin , then use the command below:</label>
+      <div class="flex items-center justify-between mb-4 p-3 bg-gray-100 dark:bg-gray-700 rounded-xl border dark:border-gray-600">
+        <code id="commandText" class="text-sm font-mono text-gray-700 dark:text-gray-300 select-all overflow-x-auto whitespace-nowrap">
+          netsh wlan show networks mode=bssid
+        </code>
+        <button id="copyCommandBtn" class="ml-4 flex-shrink-0 bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium px-3 py-1 rounded-lg transition duration-150 ease-in-out shadow-md">
+          Copy Command
+        </button>
+      </div>
+      <!-- END NEW -->
+
+      <div class="mb-3">
+        <label class="block text-sm font-medium mb-1">Paste `netsh` output</label>
+        <textarea id="netshInput" class="w-full h-48 p-3 rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900"
+          placeholder="Paste output of `netsh wlan show networks mode=bssid` here..."></textarea>
+      </div>
+
+      <div class="flex gap-3 justify-center">
+        <button id="analyzeBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2 rounded-xl shadow-lg transition duration-150">Analyze</button>
+        <label class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-4 py-2 rounded-xl cursor-pointer shadow-lg transition duration-150">
+          Upload .txt<input id="fileInput" type="file" accept=".txt" class="hidden" />
+        </label>
+        <button id="clearBtn" class="bg-red-600 hover:bg-red-700 text-white font-semibold px-4 py-2 rounded-xl shadow-lg transition duration-150">Clear</button>
+      </div>
+      <p class="text-xs text-center text-gray-500 mt-3">All processing is local to your browser.</p>
+    </div>
+
+    <div id="results" class="mt-8 hidden">
+      <h2 class="text-2xl font-bold mb-4">Results</h2>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6" id="summaryCards"></div>
+
+      <div class="bg-white dark:bg-gray-800 p-4 rounded-lg shadow mb-6">
+        <canvas id="channelChart" height="240"></canvas>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left border border-gray-200 dark:border-gray-700 rounded-lg">
+          <thead class="bg-gray-200 dark:bg-gray-700">
+            <tr>
+              <th class="px-4 py-2">SSID</th>
+              <th class="px-4 py-2">Channel</th>
+              <th class="px-4 py-2">Signal (dBm)</th>
+              <th class="px-4 py-2">Band</th>
+              <th class="px-4 py-2">MAC Address</th>
+            </tr>
+          </thead>
+          <tbody id="resultsTable" class="divide-y divide-gray-100 dark:divide-gray-800"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ---------- Utilities & State ---------- */
+let networks = [];
+let channelChart = null;
+
+/* ---------- Command Copy Handler (NEW) ---------- */
+document.getElementById('copyCommandBtn').addEventListener('click', () => {
+  // Use the text from the code element for consistency
+  const commandElement = document.getElementById('commandText');
+  const commandText = commandElement.textContent.trim();
+  const button = document.getElementById('copyCommandBtn');
+  const originalText = button.textContent;
+  const originalClasses = button.className;
+
+  // Temporary textarea for copying functionality
+  const tempInput = document.createElement('textarea');
+  tempInput.value = commandText;
+  
+  // Set position off-screen
+  tempInput.style.position = 'absolute';
+  tempInput.style.left = '-9999px';
+  tempInput.style.top = '0'; 
+
+  document.body.appendChild(tempInput);
+  tempInput.select();
+  
+  let successful = false;
+  try {
+    successful = document.execCommand('copy');
+  } catch (err) {
+    console.error('Copy failed:', err);
+  } finally {
+    document.body.removeChild(tempInput);
+  }
+
+  // Visual feedback
+  if (successful) {
+    button.textContent = 'Copied!';
+    button.classList.remove('bg-blue-500', 'hover:bg-blue-600');
+    button.classList.add('bg-green-600', 'hover:bg-green-700');
+  } else {
+    button.textContent = 'Failed!';
+    button.classList.remove('bg-blue-500', 'hover:bg-blue-600');
+    button.classList.add('bg-red-600', 'hover:bg-red-700');
+  }
+
+  // Restore original state after a delay
+  setTimeout(() => {
+    button.textContent = originalText;
+    button.className = originalClasses; // Simplest way to restore Tailwind classes
+  }, 1500);
+});
+
+/* ---------- File upload handlers ---------- */
+document.getElementById('fileInput').addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    document.getElementById('netshInput').value = r.result;
+  };
+  r.readAsText(f);
+});
+
+/* Clear */
+document.getElementById('clearBtn').addEventListener('click', () => {
+  document.getElementById('netshInput').value = '';
+  networks = [];
+  document.getElementById('results').classList.add('hidden');
+  if (channelChart) { channelChart.destroy(); channelChart = null; }
+});
+
+/* Analyze */
+document.getElementById('analyzeBtn').addEventListener('click', () => {
+  const text = document.getElementById('netshInput').value;
+  if (!text || !text.trim()) return alert('Paste or upload netsh output first.');
+  networks = parseNetshOutput(text);
+  if (!networks.length) return alert('No valid networks found.');
+  renderAll(networks);
+  document.getElementById('results').classList.remove('hidden');
+});
+
+/* ---------- Parser ---------- */
+/*
+ Expect typical netsh lines:
+ SSID 1 : MiFibra-37CB
+ BSSID 1 : a4:ce:da:7e:37:cd
+ Signal : 35%
+ Channel : 1
+*/
+function parseNetshOutput(text) {
+  const lines = text.split(/\r?\n/);
+  const result = [];
+  let current = null;
+
+  for (let raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const ssidMatch = line.match(/^SSID\s+\d+\s*:\s*(.+)$/i);
+    const bssidMatch = line.match(/^BSSID\s+\d+\s*:\s*([0-9A-Fa-f:]{17})$/i);
+    const signalPctMatch = line.match(/^Signal\s*:\s*(\d+)%/i);
+    const channelMatch = line.match(/^Channel\s*:\s*(\d+)/i);
+
+    if (ssidMatch) {
+      // new SSID block begins
+      if (current) result.push(current);
+      current = { ssid: ssidMatch[1].trim(), bssid: '', signalPct: null, channel: null, band: '', signalDbm: null };
+    } else if (bssidMatch && current) {
+      current.bssid = bssidMatch[1].toUpperCase();
+    } else if (signalPctMatch && current) {
+      const pct = parseInt(signalPctMatch[1], 10);
+      current.signalPct = isNaN(pct) ? null : pct;
+      // Convert percent -> approximate dBm: use common mapping
+      // 100% -> -30 dBm, 0% -> -100 dBm (linear approx)
+      if (current.signalPct !== null) current.signalDbm = -100 + (current.signalPct / 100) * 70;
+    } else if (channelMatch && current) {
+      const ch = parseInt(channelMatch[1], 10);
+      current.channel = isNaN(ch) ? null : ch;
+      if (current.channel !== null) current.band = (current.channel <= 14) ? '2.4 GHz' : '5 GHz';
+    }
+  }
+  if (current) result.push(current);
+
+  // filter out entries without channel or bssid (keep those with at least channel)
+  return result.filter(r => r.channel !== null);
+}
+
+/* ---------- Rendering ---------- */
+function renderAll(list) {
+  renderTable(list);
+  renderSummary(list);
+  renderChart(list);
+}
+
+function renderTable(list) {
+  const tbody = document.getElementById('resultsTable');
+  tbody.innerHTML = '';
+  list.forEach(n => {
+    const tr = document.createElement('tr');
+    const sigText = (typeof n.signalDbm === 'number') ? n.signalDbm.toFixed(1) : 'N/A';
+    tr.innerHTML = `
+      <td class="px-4 py-2">${escapeHtml(n.ssid || '(hidden)')}</td>
+      <td class="px-4 py-2">${n.channel ?? 'N/A'}</td>
+      <td class="px-4 py-2">${sigText}</td>
+      <td class="px-4 py-2">${n.band || 'N/A'}</td>
+      <td class="px-4 py-2">${n.bssid || 'N/A'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderSummary(list) {
+  const band24 = list.filter(x => x.band === '2.4 GHz');
+  const band5  = list.filter(x => x.band === '5 GHz');
+
+  const best24 = pickBest24(band24);
+  const best5  = pickBest5(band5);
+
+  const interference24 = calcInterferencePct(band24);
+  const interference5  = calcInterferencePct(band5);
+
+  document.getElementById('summaryCards').innerHTML = `
+    <div class="p-4 rounded-lg bg-white dark:bg-gray-800 shadow">
+      <p class="text-sm">Best 2.4 GHz Channel</p>
+      <p class="text-2xl font-bold">${best24}</p>
+    </div>
+    <div class="p-4 rounded-lg bg-white dark:bg-gray-800 shadow">
+      <p class="text-sm">Best 5 GHz Channel</p>
+      <p class="text-2xl font-bold">${best5}</p>
+    </div>
+    <div class="p-4 rounded-lg bg-white dark:bg-gray-800 shadow col-span-2">
+      <p class="text-sm">Interference</p>
+      <p class="text-base font-medium">2.4 GHz: ${interference24}% | 5 GHz: ${interference5}%</p>
+    </div>
+  `;
+}
+
+/* ---------- Selection logic ---------- */
+function pickBest24(list) {
+  // Evaluate 1,6,11 by effective interference (count + avg signal)
+  const channels = [1,6,11];
+  const score = {1:0,6:0,11:0};
+
+  channels.forEach(ch => {
+    // compute overlap: networks whose channel overlaps with ch (consider +/-2 channels overlap)
+    list.forEach(n => {
+      if (!n.channel) return;
+      const overlap = Math.abs(n.channel - ch) <= 2; // conservative
+      if (overlap) {
+        // stronger signals add more penalty
+        const penalty = (typeof n.signalDbm === 'number') ? (100 + n.signalDbm) : 30;
+        score[ch] += penalty;
+      }
+    });
+  });
+  // pick channel with minimum penalty
+  return channels.reduce((a,b) => score[a] <= score[b] ? a : b);
+}
+
+function pickBest5(list) {
+  if (!list.length) return 36;
+  // choose channel with fewest APs (and lower average signal)
+  const counts = {};
+  list.forEach(n => {
+    const ch = n.channel;
+    counts[ch] = counts[ch] || {count:0, sum:-0};
+    counts[ch].count++;
+    if (typeof n.signalDbm === 'number') counts[ch].sum += Math.abs(n.signalDbm);
+  });
+  // pick channel with smallest count, tie-breaker by lower avg signal
+  const keys = Object.keys(counts).map(k => parseInt(k,10));
+  keys.sort((a,b) => {
+    if (counts[a].count !== counts[b].count) return counts[a].count - counts[b].count;
+    const avgA = counts[a].sum / counts[a].count;
+    const avgB = counts[b].sum / counts[b].count;
+    return avgA - avgB;
+  });
+  // prefer low non-DFS block if available: check 36-48 first
+  const preferBlock = keys.find(k => k >=36 && k <=48) ?? keys[0];
+  return preferBlock;
+}
+
+function calcInterferencePct(list) {
+  if (!list.length) return 0;
+  // metric: higher absolute dBm (closer to 0) increases interference
+  const numeric = list.filter(n => typeof n.signalDbm === 'number').map(n => Math.abs(n.signalDbm));
+  if (!numeric.length) return 0;
+  const avgAbs = numeric.reduce((a,b)=>a+b,0)/numeric.length; // e.g. 50 means -50 dBm average
+  // Map avgAbs 30(-30dBm)->100% interference, 90(-90dBm)->0% interference roughly
+  const pct = Math.round(Math.max(0, Math.min(100, ((90 - avgAbs) / 60) * 100 )));
+  return pct;
+}
+
+/* ---------- Chart ---------- */
+function renderChart(list) {
+  const ctx = document.getElementById('channelChart').getContext('2d');
+  if (channelChart) channelChart.destroy();
+
+  // present a fixed channel axis: 1..13 and common 5GHz channels (36..161)
+  const chLabels = [];
+  // build labels from data: include unique sorted channels
+  const uniq = [...new Set(list.map(n => n.channel))].sort((a,b)=>a-b);
+  uniq.forEach(c => chLabels.push(c));
+
+  // values: strongest signal per channel per band (dBm)
+  const data24 = chLabels.map(ch => {
+    const nets = list.filter(n => n.channel === ch && n.band === '2.4 GHz' && typeof n.signalDbm === 'number');
+    return nets.length ? Math.max(...nets.map(n => n.signalDbm)) : null;
+  });
+  const data5 = chLabels.map(ch => {
+    const nets = list.filter(n => n.channel === ch && n.band === '5 GHz' && typeof n.signalDbm === 'number');
+    return nets.length ? Math.max(...nets.map(n => n.signalDbm)) : null;
+  });
+
+  channelChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: chLabels,
+      datasets: [
+        { label: '2.4 GHz (dBm)', data: data24, backgroundColor: 'rgba(59,130,246,0.7)' },
+        { label: '5 GHz (dBm)', data: data5, backgroundColor: 'rgba(16,185,129,0.7)' }
+      ]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: { suggestedMin: -100, suggestedMax: -30, title: { display: true, text: 'Signal (dBm)' } },
+        x: { title: { display: true, text: 'Channel' } }
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const val = context.raw;
+              return (val === null) ? 'No data' : (val.toFixed ? val.toFixed(1) + ' dBm' : String(val));
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+/* ---------- Helpers ---------- */
+function escapeHtml(s) {
+  if (!s && s !== 0) return '';
+  return String(s).replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])});
+}
+</script>
+</body>
+</html>
